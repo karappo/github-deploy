@@ -1,5 +1,5 @@
 .git/
-/.github/
+/.github/workflows/deploy.yml
 .sass-cache/
 /_assets/
 .gitattributes
