@@ -53,7 +53,7 @@ do_sync()
 
     if [ "${DEP_PASSWORD:+isexists}" = "isexists" ]; then
       log '- rsync with password'
-      if sshpass -p "$DEP_PASSWORD" rsync -aIzh --stats --delete -e ssh "$opt_exclude" . "$DEP_USER@$DEP_HOST:$DEP_HOST_DIR"; then
+      if sshpass -p "$DEP_PASSWORD" rsync -v -aIzh --stats --delete -e ssh "$opt_exclude" . "$DEP_USER@$DEP_HOST:$DEP_HOST_DIR"; then
         log "- sync -> done."
       else
         log "- sync -> [ERROR]"
