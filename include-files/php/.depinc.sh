@@ -10,6 +10,8 @@ before_sync(){
   # remove "DEP_XXX_RM "
   find . -name "*.htaccess" -exec sed -i$ext "s|#DEP_REMOTE_RM ||" {} \;
   find . -name "*.htaccess" -exec sed -i$ext "s|#DEP_${DRONE_BRANCH^^}_RM ||" {} \;
+  find . -name "*robots.txt" -exec sed -i$ext "s|#DEP_REMOTE_RM ||" {} \;
+  find . -name "*robots.txt" -exec sed -i$ext "s|#DEP_${DRONE_BRANCH^^}_RM ||" {} \;
   find . -name "*.php" -exec sed -i$ext "s|//DEP_REMOTE_RM ||" {} \;
   find . -name "*.php" -exec sed -i$ext "s|//DEP_${DRONE_BRANCH^^}_RM ||" {} \;
 
