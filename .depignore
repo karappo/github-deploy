@@ -1,6 +1,7 @@
 .*-version
 .editorconfig
-.eslintrc.js
+.eslintrc*
+.stylelintrc*
 .git/
 .gitattributes
 .github/
@@ -8,16 +9,15 @@
 .gitmodules
 .sass-cache/
 /_assets/
-composer.*
+composer*
 Gemfile
 Gemfile.lock
-Gruntfile.*
-gulpfile.*
+Gruntfile*
+gulpfile*
 package-lock.json
 package.json
 Procfile
-README
-README.*
+README*
 yarn.lock
 
 # drone-deploy
