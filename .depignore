@@ -9,7 +9,6 @@
 .gitmodules
 .sass-cache/
 /_assets/
-composer*
 Gemfile
 Gemfile.lock
 Gruntfile*
