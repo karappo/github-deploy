@@ -23,6 +23,7 @@ yarn.lock
 .depignore
 .depinc.sh
 .drone.yml
+deploy.sh
 
 # for MODX
 /assets/images/
