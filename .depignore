@@ -17,6 +17,8 @@ package-lock.json
 package.json
 Procfile
 README*
+CLAUDE.md
+AGENTS.md
 yarn.lock
 
 # drone-deploy
