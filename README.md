@@ -40,8 +40,8 @@ flowchart LR
 
 - **rsync または lftp** でファイルを転送
 - **ブランチごとの環境切り替え** — 環境変数の命名規則で本番・ステージング等を自動判別
-- **カスタマイズ可能な前後処理** — [インクルードファイル](#インクルードファイル)で同期前後に任意のスクリプトを実行
-- **除外ファイル指定** — [イグノアファイル](#除外ファイルイグノアファイル)でデプロイ対象外を管理
+- **カスタマイズ可能な前後処理** — [include file](#include-file)で同期前後に任意のスクリプトを実行
+- **除外ファイル指定** — [ignore file](#ignore-file)でデプロイ対象外を管理
 
 ## セットアップ
 
@@ -171,10 +171,10 @@ on:
 | `DEP_[BRANCH]_PASSWORD` | | rsync で RSA 認証を使う場合は不要 |
 | `DEP_[BRANCH]_FTPS` | `yes` / `no` | デフォルト `yes`。FTPS 非対応サーバーの場合のみ `no` に設定 |
 | `DEP_[BRANCH]_PORT` | 例: `2222` | rsync で 22 番以外のポートを使用する場合 |
-| `DEP_[BRANCH]_INCLUDE_FILE` | 例: `./.depinc.sh` | [インクルードファイル](#インクルードファイル)のパスまたは URL |
-| `DEP_[BRANCH]_IGNORE_FILE` | 例: `./.depignore` | [イグノアファイル](#除外ファイルイグノアファイル)のパスまたは URL。未指定時は[デフォルト](https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/.depignore)を使用 |
+| `DEP_[BRANCH]_INCLUDE_FILE` | 例: `./.depinc.sh` | [include file](#include-file) のパスまたは URL |
+| `DEP_[BRANCH]_IGNORE_FILE` | 例: `./.depignore` | [ignore file](#ignore-file) のパスまたは URL。未指定時は[デフォルト](https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/.depignore)を使用 |
 
-## インクルードファイル
+## Include file
 
 同期の前後にカスタム処理を実行できるファイルです。
 
@@ -254,7 +254,7 @@ define('DB_HOST', 'localhost');
 #DEP_STAGING_RM order deny,allow
 ```
 
-### 用意済みインクルードファイル
+### 用意済み include file
 
 [`include-files`](https://github.com/karappo/github-deploy/tree/main/include-files) ディレクトリに以下のテンプレートがあります。
 
@@ -265,7 +265,7 @@ define('DB_HOST', 'localhost');
 | `coreserver/` | CoreServer 向け（SSH 登録 + PHP の置換処理） |
 | `modx-tmpl/` | MODX 向けテンプレート（要カスタマイズ） |
 
-## 除外ファイル（イグノアファイル）
+## Ignore file
 
 同期時に転送から除外するファイルを指定します。
 
@@ -290,7 +290,7 @@ env:
   DEP_MAIN_IGNORE_FILE: ./.depignore
 ```
 
-未指定の場合は[デフォルトのイグノアファイル](https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/.depignore)が自動的にダウンロードされます。
+未指定の場合は[デフォルトの ignore file](https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/.depignore) が自動的にダウンロードされます。
 
 **注意:** コメントは行頭の `#` のみ対応。行中の `#` はコメントとして扱われません（lftp の制約）。
 
