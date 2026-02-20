@@ -20,11 +20,11 @@ before_sync(){
 
   # remove "DEP_XXX_RM "
   find . -name "*.htaccess" -exec sed -i$ext "s|#DEP_REMOTE_RM ||" {} \;
-  find . -name "*.htaccess" -exec sed -i$ext "s|#RM_SYNC_${DRONE_BRANCH^^} ||" {} \;
+  find . -name "*.htaccess" -exec sed -i$ext "s|#RM_SYNC_${GITHUB_REF_NAME^^} ||" {} \;
   find . -name "*robots.txt" -exec sed -i$ext "s|#DEP_REMOTE_RM ||" {} \;
-  find . -name "*robots.txt" -exec sed -i$ext "s|#RM_SYNC_${DRONE_BRANCH^^} ||" {} \;
+  find . -name "*robots.txt" -exec sed -i$ext "s|#RM_SYNC_${GITHUB_REF_NAME^^} ||" {} \;
   find . -name "*.php" -exec sed -i$ext "s|//DEP_REMOTE_RM ||" {} \;
-  find . -name "*.php" -exec sed -i$ext "s|//DEP_${DRONE_BRANCH^^}_RM ||" {} \;
+  find . -name "*.php" -exec sed -i$ext "s|//DEP_${GITHUB_REF_NAME^^}_RM ||" {} \;
 
   # [TODO]
   # ファイルディレクトリをリモート用に変換。「/Users/terada/Sites/example.com」と「/home/remote/example.com」の部分を適宜設定すること

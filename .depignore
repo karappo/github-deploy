@@ -21,10 +21,9 @@ CLAUDE.md
 AGENTS.md
 yarn.lock
 
-# drone-deploy
+# github-deploy
 .depignore
 .depinc.sh
-.drone.yml
 deploy.sh
 
 # for MODX
