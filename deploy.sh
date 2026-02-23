@@ -30,7 +30,7 @@ do_sync()
   # download defaults if ignore file isn't exists
   if [ ${DEP_IGNORE_FILE:-isnil} = "isnil" -o ! -f "$DEP_IGNORE_FILE" ]; then
     log "| Downloading default ignore file..."
-    if wget -O .depignore https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/master/.depignore; then
+    if wget -O .depignore https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/.depignore; then
       log "| -> Done."
       DEP_IGNORE_FILE=$PWD/.depignore
     else
@@ -140,7 +140,7 @@ ALL_PARAMS=(COMMAND FTPS PORT HOST USER PASSWORD HOST_DIR INCLUDE_FILE IGNORE_FI
 NECESSARY_PARAMS=(COMMAND HOST USER HOST_DIR)
 
 for param in ${NECESSARY_PARAMS[@]}; do
-  branch_param="DEP_${DRONE_BRANCH^^}_$param"
+  branch_param="DEP_${GITHUB_REF_NAME^^}_$param"
   remote_param="DEP_REMOTE_$param"
   eval 'val=${'$branch_param'}'
   if [ ! $val ]; then
@@ -154,10 +154,10 @@ done
 
 # ----------------
 # casting all parameters
-# e.g. DEP_COMMAND=${DEP_MASTER_COMMAND}
+# e.g. DEP_COMMAND=${DEP_MAIN_COMMAND}
 
 for param in ${ALL_PARAMS[@]}; do
-  branch_param="DEP_${DRONE_BRANCH^^}_$param"
+  branch_param="DEP_${GITHUB_REF_NAME^^}_$param"
   remote_param="DEP_REMOTE_$param"
   eval 'val=${'$branch_param'}'
   if [ $val ]; then

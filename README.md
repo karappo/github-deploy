@@ -1,203 +1,224 @@
-# drone-deploy
+# github-deploy
 
-This is a useful scripts collection for deploying with [Drone CI](https://github.com/drone/drone).
+GitHub Actions を使ったデプロイスクリプト集です。rsync または lftp でファイルをサーバーに転送します。
 
-_[Drone v0.8 Compatible](https://github.com/karappo/drone-deploy/branches/all?utf8=%E2%9C%93&query=drone-compatible)_
+## 動作フロー
 
-![How "drone-deploy" works](./how-drone-deploy-works.png)
+```mermaid
+flowchart LR
+  subgraph Local
+    A[1. 開発]
+  end
 
-## Features
+  A -->|2. Push| B["GitHub<br/>engineer/their-work"]
 
-- Uploading files with rsync or lftp
-- [Auto editing in each environments before uploading](#include-file)
+  subgraph GA["GitHub Actions"]
+    direction TB
+    C[3. Clone]
+    D["4. deploy.sh を取得<br/>karappo/github-deploy"]
+    subgraph exec["5. 実行"]
+      direction TB
+      E["Before<br/><em>カスタマイズ可能</em><br/>置換処理など"]
+      F["Sync<br/><strong>rsync or lftp</strong>"]
+      G["After<br/><em>カスタマイズ可能</em><br/>キャッシュクリアなど"]
+      E --> F --> G
+    end
+    C --> D --> exec
+  end
 
-## Setup
+  B --> GA
 
-### 1. Fork this repository
+  subgraph Servers["デプロイ先"]
+    H[本番サーバー]
+    I[ステージングサーバー]
+  end
 
-This scripts are triggered by Drone's [Deployments](https://github.com/drone/drone#deployments). It will get [this file](https://raw.githubusercontent.com/karappo/drone-deploy/update-readme/deploy.sh) hosted on this repository. This means that changes on this repository may affect your deployment immediately. So you shouldn't use this directly, you should fork this at first, then change [these parts](https://github.com/karappo/drone-deploy/search?utf8=%E2%9C%93&q=https%3A%2F%2Fraw.githubusercontent.com%2Fkarappo%2Fdrone-deploy) to yours. (just replace `karappo/drone-deploy/` to `your-acocunt/drone-deploy/`)
+  exec -->|配信| Servers
+```
 
-### 2. Setup Drone on your server
+## 特徴
 
-Please install following [this instruction](http://readme.drone.io/0.4/setup/overview/).
+- **rsync または lftp** でファイルを転送
+- **ブランチごとの環境切り替え** — 環境変数の命名規則で本番・ステージング等を自動判別
+- **カスタマイズ可能な前後処理** — [include file](#include-file)で同期前後に任意のスクリプトを実行
+- **除外ファイル指定** — [ignore file](#ignore-file)でデプロイ対象外を管理
 
-Ref: [Easily install Drone on Digital Ocean (Japanese)](https://qiita.com/naokazuterada/items/d040ad27e77b587ef49f)
+## セットアップ
 
-_[This branch list shows drone compatibles.](https://github.com/karappo/drone-deploy/branches/all?utf8=%E2%9C%93&query=drone-compatible)_
+### 1. SSH鍵の作成
 
-### 3. Done! (See 'Usage')
+```sh
+ssh-keygen -t rsa -b 4096 -f ~/Desktop/ssh_key -C '<project_name>@github-actions'
+```
 
-## Usage
+以下の2ファイルが作成されます。
 
-1. Activate your project on Drone.
-2. [Add `.drone.yml` file into your project root](#droneyml)
-3. [Optional] Add [include file](#include-file) and [ignore file](#ignore-file)
-4. Commit and push as usual
+- `~/Desktop/ssh_key` — 秘密鍵
+- `~/Desktop/ssh_key.pub` — 公開鍵
 
+### 2. デプロイ先サーバーの設定
 
-## .drone.yml
+デプロイ先サーバーに接続し、`~/.ssh/authorized_keys` に公開鍵（`ssh_key.pub`）の内容を追記します。
 
-The following contents are recommended.
+- ファイルが存在しない場合は作成し、パーミッションを `600` に設定
+- ファイル末尾に空行があることを確認
 
-.drone.yml
+### 3. GitHub Secrets の登録
+
+リポジトリの **Settings > Secrets and variables > Actions** で以下を登録します。
+
+| Secret 名 | 内容 |
+|:--|:--|
+| `SSH_KEY` | 秘密鍵（`ssh_key`）の内容をそのままペースト。末尾の空行を削除しないこと |
+| `KNOWN_HOSTS` | ローカルでデプロイ先に SSH 接続後、`~/.ssh/known_hosts` から該当行をコピー。末尾の空行を含めること |
+
+`KNOWN_HOSTS` の例:
+
+```
+[ssh-xxx.example.net]:XXXX,[XXX.XXX.XXX.XXX]:XXXX ssh-rsa AAAAB...Q==
+
+```
+
+### 4. deploy.yml の作成
+
+`.github/workflows/deploy.yml` を作成します。
 
 ```yml
-clone:
-  git:
-    image: plugins/git
-    recursive: true
-    depth: 1
-    submodule_override:
-      path/to/submodule: https://github.com:443/someone/sample.git
-    when:
-      branch: [ master ]
-pipeline:
-  build:
-    image: karappo/dronedeploy:drone-0.8
-    environment:
-      - DEP_MASTER_COMMAND='rsync'
-      - DEP_MASTER_HOST='sample.com'
-      - DEP_MASTER_USER='username'
-      - DEP_MASTER_HOST_DIR='htdocs'
-    commands:
-      - echo "$SSH_KEY" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
-      - curl https://raw.githubusercontent.com/karappo/drone-deploy/drone-compatible/v0.8/deploy.sh | bash
-    secrets: [ ssh_key ]
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          echo "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          DEP_MAIN_COMMAND: rsync
+          DEP_MAIN_HOST: example.com
+          DEP_MAIN_USER: username
+          DEP_MAIN_HOST_DIR: /home/username/www
+        run: |
+          curl -sS https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/deploy.sh | bash
 ```
 
-### Explaination of variables
+#### 複数ブランチへの対応
 
-#### clone.git.recursive
+ステージング環境なども同時にデプロイする場合:
 
-If you want to ignore submodules, you can set `false` to disable git recursive clone.
-This is optional. If you don't need it, you can remove the first 4 lines. Because default value is `true`.
+```yml
+on:
+  push:
+    branches: [main, staging]
 
-##### clone.git.depth
+# ...
 
-To set `1` is recommended, because of making cloning faster.
-
-##### clone.git.submodule_override
-
-key: Set the `path` value in .gitmodules<br>
-value: Replacement URL(https, **needs port setting**) with the `url` value in .gitmodules.
-
-Ref:
-- [Official Document](http://plugins.drone.io/drone-plugins/drone-git/)
-
-##### clone.git.when.branch
-
-Adding conditions for cloning is recomended otherwise drone will do "cloning" after every branch pushing. Especialy you should check this configration when having heavy "build".
-
-##### pipeline.build.image
-
-Setting this to `karappo/dronedeploy` is recommended, because it's been installed necessary tools already, so this makes builds fater.
-Ref: [karappo/dronedeploy](https://hub.docker.com/r/karappo/dronedeploy/~/dockerfile/)
-
-##### pipeline.build.environment \[required\]
-
-These environment variables will be used in scripts.
-Replace `[BRANCH]` to your target branch name.
-If `DEP_[BRANCH]_XXX` won't be found, the scripts will use `DEP_REMOTE_XXX` instead.
-It's useful if you have some common settings between remote environments.
-
-###### Required environment variables
-
-| Key                     | Value                 | Description          |
-|:----------------------- |:--------------------  |:-------------------- |
-| `DEP_[BRANCH]_COMMAND`  | `rsync` or `lftp`     | Sync command (`rsync` is recommended) |
-| `DEP_[BRANCH]_HOST`     | e.g. `sample.com`     | Target remote host   |
-| `DEP_[BRANCH]_USER`     |                       | SSH or FTP username  |
-| `DEP_[BRANCH]_PASSWORD` |                       | **Not necessary** if command is `rsync` and allow access with RSA authentication |
-| `DEP_[BRANCH]_HOST_DIR` | e.g. `/home/user/www`,`www` | Use **absolute** path if command is `rsync`, or **related** path if command is `lftp` |
-
-###### Optional environment variables
-
-| Key                         | Value               | Description |
-|:--------------------------- |:------------------- |:----------- |
-| `DEP_[BRANCH]_FTPS`         | `yes` or `no`       | Default is `yes`. [Set `no` only if remote doesn't accept FTPS](#disable-deployment-on-particular-timing) |
-| `DEP_[BRANCH]_PORT`         | e.g. `2222`         | Activate only if command is `rsync` and using particular port other than `22` |
-| `DEP_[BRANCH]_INCLUDE_FILE` | e.g. `./.depinc.sh` | [URL allowed](#include-file) |
-| `DEP_[BRANCH]_IGNORE_FILE`  | e.g. `./.depignore`, [default](https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/master/.depignore) | [URL allowed](#ignore-file) |
-
-##### pipeline.build.commands \[required\]
-
-This is the entry point of this system. **Do NOT change**.
-
-##### pipeline.build.secrets
-
-Please set secrets named `ssh_key` on your drone dashboard.
-
-You may use ssh-keygen
-```sh
-ssh-keygen -f ~/Desktop/ssh_key -C 'project_name@drone.your.domain'
+      - name: Deploy
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          # main ブランチ用
+          DEP_MAIN_COMMAND: rsync
+          DEP_MAIN_HOST: example.com
+          DEP_MAIN_USER: username
+          DEP_MAIN_HOST_DIR: /home/username/www
+          # staging ブランチ用
+          DEP_STAGING_COMMAND: rsync
+          DEP_STAGING_HOST: stg.example.com
+          DEP_STAGING_USER: username
+          DEP_STAGING_HOST_DIR: /home/username/stg
+        run: |
+          curl -sS https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/deploy.sh | bash
 ```
+
+### 5. 動作確認
+
+対象ブランチに push 後、リポジトリの **Actions** タブでワークフローの実行結果を確認します。
+
+## 環境変数
+
+`[BRANCH]` にはブランチ名を大文字で指定します（例: `main` → `MAIN`、`staging` → `STAGING`）。
+
+`DEP_[BRANCH]_XXX` が見つからない場合は `DEP_REMOTE_XXX` がフォールバックとして使用されます。複数環境で共通の設定がある場合に便利です。
+
+### 必須
+
+| 変数名 | 値 | 説明 |
+|:--|:--|:--|
+| `DEP_[BRANCH]_COMMAND` | `rsync` または `lftp` | 同期コマンド（`rsync` 推奨） |
+| `DEP_[BRANCH]_HOST` | 例: `example.com` | デプロイ先ホスト |
+| `DEP_[BRANCH]_USER` | | SSH または FTP ユーザー名 |
+| `DEP_[BRANCH]_HOST_DIR` | 例: `/home/user/www` | デプロイ先ディレクトリ。rsync の場合は**絶対パス**、lftp の場合は**相対パス** |
+
+### オプション
+
+| 変数名 | 値 | 説明 |
+|:--|:--|:--|
+| `DEP_[BRANCH]_PASSWORD` | | rsync で RSA 認証を使う場合は不要 |
+| `DEP_[BRANCH]_FTPS` | `yes` / `no` | デフォルト `yes`。FTPS 非対応サーバーの場合のみ `no` に設定 |
+| `DEP_[BRANCH]_PORT` | 例: `2222` | rsync で 22 番以外のポートを使用する場合 |
+| `DEP_[BRANCH]_INCLUDE_FILE` | 例: `./.depinc.sh` | [include file](#include-file) のパスまたは URL |
+| `DEP_[BRANCH]_IGNORE_FILE` | 例: `./.depignore` | [ignore file](#ignore-file) のパスまたは URL。未指定時は[デフォルト](https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/.depignore)を使用 |
 
 ## Include file
 
-You can define custom processes before and after syncing in this file.
+同期の前後にカスタム処理を実行できるファイルです。
 
-### Examples purpose
+### 用途の例
 
-- Switch DB settings by each environments
-- Activate Basic Auth only on stating environment
+- 環境ごとの DB 設定の切り替え
+- ステージング環境のみ Basic 認証を有効化
+- デプロイ後のパーミッション設定
 
-### Include file usage
+### 使い方
 
-Include file should have two methods like this.
+`before_sync` と `after_sync` の2つの関数を定義します。
 
 .depinc.sh
 
 ```sh
 before_sync(){
-  # your process here
+  # 同期前の処理
 }
 after_sync(){
-  # your process here
+  # 同期後の処理
 }
 ```
 
-You should set your include file with related path from your project's root.
-
-.drone.yml
+環境変数でパスを指定します。
 
 ```yml
-build:
-  environment:
-    - DEP_REMOTE_INCLUDE_FILE=./.depinc.sh
+env:
+  DEP_REMOTE_INCLUDE_FILE: ./.depinc.sh
 ```
 
-Or you can set this as URL.
-
-.drone.yml
+URL での指定も可能です。
 
 ```yml
-build:
-  environment:
-    - DEP_REMOTE_INCLUDE_FILE=https://raw.githubusercontent.com/karappo/drone-deploy/drone-compatible/v0.8/include-files/wordpress/.depinc.sh
+env:
+  DEP_REMOTE_INCLUDE_FILE: https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/include-files/wordpress/.depinc.sh
 ```
 
-If you set like above, these process below will be executed.
+### WordPress での例
 
-
-1. Remove `#DEP_REMOTE_RM ` and `#DEP_[BRANCH]_RM ` in `.htaccess` file
-2. Remove `//DEP_REMOTE_RM ` and `//DEP_[BRANCH]_RM ` in `.php` files
-3. Set the recommended permissions for WordPress after syncing
-
-Ref: [.depinc.sh](https://github.com/karappo/drone-deploy/blob/drone-compatible/v0.8/include-files/wordpress/.depinc.sh)
-
-
-#### For WordPress
-
-In WordPress project, you can write code like this.
-
-wp-config.php
+wp-config.php で環境ごとの DB 設定を切り替える場合:
 
 ```php
-// Database Settings　-----------
-
-// Local
-
-// Activate only in local environment
+// ローカル環境（デプロイ時に除去される）
 //DEP_REMOTE_RM /*
 define('DB_NAME', 'LOCAL_DATABASE');
 define('DB_USER', 'root');
@@ -205,34 +226,23 @@ define('DB_PASSWORD', 'root');
 define('DB_HOST', 'localhost');
 //DEP_REMOTE_RM */
 
-// Remote
+// 本番環境（main ブランチのデプロイ先でのみ有効化）
+//DEP_MAIN_RM define('DB_NAME', 'PROD_DATABASE');
+//DEP_MAIN_RM define('DB_USER', 'PROD_USER');
+//DEP_MAIN_RM define('DB_PASSWORD', 'PROD_PASSWORD');
+//DEP_MAIN_RM define('DB_HOST', 'PROD_HOST');
 
-// Activate only in master branch's deploy target
-//DEP_MASTER_RM define('DB_NAME', 'PROD_DATABASE');
-//DEP_MASTER_RM define('DB_USER', 'PROD_USER');
-//DEP_MASTER_RM define('DB_PASSWORD', 'PROD_PASSWORD');
-//DEP_MASTER_RM define('DB_HOST', 'PROD_HOST');
-
-// Activate only in staging branch's deploy target
+// ステージング環境
 //DEP_STAGING_RM define('DB_NAME', 'STAGING_DATABASE');
 //DEP_STAGING_RM define('DB_USER', 'STAGING_USER');
 //DEP_STAGING_RM define('DB_PASSWORD', 'STAGING_PASSWORD');
 //DEP_STAGING_RM define('DB_HOST', 'STAGING_HOST');
-
-// Common
-
-define('DB_CHARSET', 'utf8');
-define('DB_COLLATE', '');
-
-// -----------　/ Database Settings
 ```
 
-And you can activate Basic Auth only in staging branch's target environment with this below.
+.htaccess でステージング環境のみ Basic 認証を有効化する場合:
 
-.htaccess
-
-```sh
-# Basic Authentication -----------
+```apache
+# Basic Authentication
 #DEP_STAGING_RM <Files ~ "^\.(htaccess|htpasswd)$">
 #DEP_STAGING_RM deny from all
 #DEP_STAGING_RM </Files>
@@ -242,31 +252,22 @@ And you can activate Basic Auth only in staging branch's target environment with
 #DEP_STAGING_RM AuthType Basic
 #DEP_STAGING_RM require valid-user
 #DEP_STAGING_RM order deny,allow
-# ----------- / Basic Authentication
 ```
 
-#### File Permissions
+### 用意済み include file
 
-This is default permissions, you can edit for each project you have.
+[`include-files`](https://github.com/karappo/github-deploy/tree/main/include-files) ディレクトリに以下のテンプレートがあります。
 
-```sh
-find ./ -type d -exec chmod 705 {} \;
-find ./ -type f -exec chmod 604 {} \;
-chmod 606 .htaccess
-chmod 600 wp/wp-config.php
-```
-
-
-### Prepared include files
-
-There are some files for particular purposes or environments under the directory [`include-files`](https://github.com/karappo/drone-deploy/tree/drone-compatible/v0.8/include-files).
-
+| ディレクトリ | 用途 |
+|:--|:--|
+| `php/` | PHP サイト向け（htaccess・robots.txt・PHP ファイルの置換処理） |
+| `wordpress/` | WordPress 向け（PHP の置換処理 + デプロイ後のパーミッション設定） |
+| `coreserver/` | CoreServer 向け（SSH 登録 + PHP の置換処理） |
+| `modx-tmpl/` | MODX 向けテンプレート（要カスタマイズ） |
 
 ## Ignore file
 
-This is a file for exclusion in syncing.
-
-### Example
+同期時に転送から除外するファイルを指定します。
 
 .depignore
 
@@ -274,50 +275,48 @@ This is a file for exclusion in syncing.
 .git/
 .sass-cache/
 .gitignore
-Procfile
-README
-README.*
-/_assets/
+README*
 
-# drone-deploy
+# github-deploy
 .depignore
 .depinc.sh
-.drone.yml
+deploy.sh
 ```
 
-You should set your ignore file with related path from your project's root.
-
-.drone.yml
+環境変数でパスを指定します。
 
 ```yml
-build:
-  environment:
-    - DEP_MASTER_IGNORE_FILE=./.depignore
+env:
+  DEP_MAIN_IGNORE_FILE: ./.depignore
 ```
+
+未指定の場合は[デフォルトの ignore file](https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/.depignore) が自動的にダウンロードされます。
+
+**注意:** コメントは行頭の `#` のみ対応。行中の `#` はコメントとして扱われません（lftp の制約）。
 
 ## FAQ
 
-### Got `Fatal error: Certificate verification: Not trusted`
+### `Fatal error: Certificate verification: Not trusted` が出る
 
-If you got these errors, your remote server may not accept FTPS connection. Please set `DEP_[BRANCH]_FTPS=no`.
+デプロイ先サーバーが FTPS に対応していない可能性があります。`DEP_[BRANCH]_FTPS` を `no` に設定してください。
 
-```sh
+```
 [DEPLOY] - sync -> via FTPS
 ftp://user:password@host.com
 mirror: Fatal error: Certificate verification: Not trusted
 [DEPLOY] - sync -> [ERROR]
 ```
 
-### Disable deployment on particular timing
+### 特定のタイミングでデプロイをスキップしたい
 
-You can skip deployment by adding `[CI SKIP]` to the last commit message. Ammend your last commit or just add empty commit and push. Note this is case-insensitive.
+コミットメッセージに `[skip ci]` を含めると、GitHub Actions の実行がスキップされます。
 
 ```sh
-git commit --allow-empty -m '[CI SKIP]'
+git commit --allow-empty -m '[skip ci]'
 ```
 
-Ref: [Skip Commits (Drone Document)](http://docs.drone.io/hooks/#skip-commits)
+参考: [GitHub Actions - ワークフローのスキップ](https://docs.github.com/ja/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/skipping-workflow-runs)
 
-## License
+## ライセンス
 
-- **drone-deploy** is licensed under the [MIT License](https://github.com/karappo/drone-deploy/blob/master/LICENSE-MIT)
+[MIT License](https://github.com/karappo/github-deploy/blob/main/LICENSE-MIT)
