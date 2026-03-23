@@ -79,6 +79,8 @@ ssh-keygen -t rsa -b 4096 -f ~/Desktop/ssh_key -C '<project_name>@github-actions
 
 ```
 
+`KNOWN_HOSTS`の取得には、[このような関数](https://github.com/naokazuterada/dotfiles/blob/main/functions/known-hosts-search)を用意しておくと便利。
+
 ### 4. deploy.yml の作成
 
 `.github/workflows/deploy.yml` を作成します。
