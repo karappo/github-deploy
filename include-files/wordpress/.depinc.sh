@@ -2,7 +2,42 @@
 
 # for WordPress website deploy (need SSH)
 
+# ----------------------------------------------------------------------
+# メンテナンス表示について
+#
+# 同期(rsync/lftp)中はファイルが不整合な状態になるため、WordPress 標準の
+# `.maintenance` ファイルを使ってデプロイ中だけメンテナンス画面を表示する。
+#   - before_sync : 同期開始前にリモートへ .maintenance を設置（メンテ ON）
+#   - after_sync  : 同期完了後にリモートから .maintenance を削除（メンテ OFF）
+#
+# 【必須】.depignore に `.maintenance` を追加すること。
+#   rsync は --delete 付きで動作しており、ローカルに無いファイルはリモートから
+#   削除される。除外しておかないと設置した .maintenance が同期中に消えてしまう。
+#
+# 【注意1】WordPress コアは $upgrading から 10 分経過すると自動でメンテを解除する。
+#   10 分以上かかるデプロイでは途中で解除される点に留意。
+# 【注意2】同期が失敗すると deploy.sh は after_sync を実行せず終了するため、
+#   .maintenance が残りメンテ表示が継続する（半端な状態を晒さない利点もあるが、
+#   上記 10 分ルールで最終的には自動解除される）。
+#
+# WP コアの場所に合わせて MAINTENANCE_FILE のパスを調整すること。
+# このリポジトリの WordPress 構成ではコアが wp/ 配下にあるため wp/.maintenance。
+# ----------------------------------------------------------------------
+MAINTENANCE_FILE="$DEP_HOST_DIR/wp/.maintenance"
+
+# リモートでコマンドを実行するヘルパー（ポート指定の有無を吸収）
+maintenance_ssh(){
+  if [ "${DEP_PORT:+isexists}" = "isexists" ]; then
+    ssh "$DEP_USER@$DEP_HOST" -p "$DEP_PORT" "$1"
+  else
+    ssh "$DEP_USER@$DEP_HOST" "$1"
+  fi
+}
+
 before_sync(){
+
+  # メンテナンス表示 ON（同期開始前にリモートへ .maintenance を設置）
+  maintenance_ssh "printf '%s' '<?php \$upgrading = time(); ?>' > $MAINTENANCE_FILE"
 
   # extension of backup files which are created before replacement
   ext=".temp_bakup"
@@ -48,4 +83,7 @@ echo ''
     ssh $DEP_USER@$DEP_HOST 'bash -s' < script.sh
   fi
   rm -f script.sh
+
+  # メンテナンス表示 OFF（同期完了・パーミッション設定後に .maintenance を削除）
+  maintenance_ssh "rm -f $MAINTENANCE_FILE"
 }

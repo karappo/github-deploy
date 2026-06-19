@@ -35,6 +35,7 @@ deploy.sh
 # for Wordpress
 /wp/wp-content/uploads/
 /wp-content/uploads/
+.maintenance
 
 # [ NOTICE ]
 # Comment must start with "#" but any other charactors
