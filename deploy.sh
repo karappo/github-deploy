@@ -209,6 +209,12 @@ else
   source "$DEP_INCLUDE_FILE"
 fi
 
+# teardown hook
+# include で on_teardown が定義されていれば、スクリプト終了時（成功・失敗・中断の
+# いずれでも）必ず実行する。同期失敗時は after_sync が呼ばれないため、メンテナンス
+# 表示の解除などの後始末をここで保証する。
+trap 'type on_teardown >/dev/null 2>&1 && on_teardown' EXIT
+
 do_sync
 
 exit 0
