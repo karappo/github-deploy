@@ -176,6 +176,13 @@ on:
 | `DEP_[BRANCH]_INCLUDE_FILE` | 例: `./.depinc.sh` | [include file](#include-file) のパスまたは URL |
 | `DEP_[BRANCH]_IGNORE_FILE` | 例: `./.depignore` | [ignore file](#ignore-file) のパスまたは URL。未指定時は[デフォルト](https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/.depignore)を使用 |
 
+WordPress 用 include（`wordpress/`）を使う場合の追加変数:
+
+| 変数名 | 値 | 説明 |
+|:--|:--|:--|
+| `DEP_WP_DIR` | 例: `wp` | WP コアのディレクトリ（HOST_DIR からの相対）。`.maintenance` の設置先に使う。既定 `wp` |
+| `DEP_MAINTENANCE_MAX_MINUTES` | 例: `60` | デプロイ中のメンテ表示を維持する最大時間（分）。既定 `60`。WordPress の 10 分自動解除を避けつつ、teardown 失敗時の自動復帰上限にもなる |
+
 ## Include file
 
 同期の前後にカスタム処理を実行できるファイルです。
@@ -263,7 +270,7 @@ define('DB_HOST', 'localhost');
 | ディレクトリ | 用途 |
 |:--|:--|
 | `php/` | PHP サイト向け（htaccess・robots.txt・PHP ファイルの置換処理） |
-| `wordpress/` | WordPress 向け（PHP の置換処理 + デプロイ後のパーミッション設定） |
+| `wordpress/` | WordPress 向け（置換処理 + デプロイ中のメンテナンス表示 + パーミッション設定）。rsync(SSH) / lftp(FTP) 両対応。lftp ではメンテ表示のみ行いパーミッション設定は skip する |
 | `coreserver/` | CoreServer 向け（SSH 登録 + PHP の置換処理） |
 | `modx-tmpl/` | MODX 向けテンプレート（要カスタマイズ） |
 
