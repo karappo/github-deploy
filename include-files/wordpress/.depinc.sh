@@ -112,12 +112,35 @@ check_wp_core_version(){
   local_ver="$(grep -m1 '^\$wp_version = ' "$local_file" | cut -d"'" -f2)"
   remote_ver="$(printf '%s\n' "$remote_raw" | grep -m1 '^\$wp_version = ' | cut -d"'" -f2)"
 
+  # 判定結果は必ず1行ログに出す。無言で素通りすると、抽出が壊れて実質無効化されていても
+  # 気づけないため（before_sync は改行なしでログ出力中なので、先に改行を入れる）。
+
+  # version.php はあるのに抽出できない = 想定外。中断はせず警告だけ出す
+  if [ -z "$local_ver" ]; then
+    printf '\n'
+    log "- WP core version -> skipped (リポジトリの version.php からバージョンを取得できませんでした)"
+    return 0
+  fi
+
   # 初回デプロイ等でサーバ側に WP が無い場合や、取得に失敗した場合は素通りさせる
-  [ -n "$remote_ver" ] || return 0
-  [ "$local_ver" = "$remote_ver" ] && return 0
+  if [ -z "$remote_ver" ]; then
+    printf '\n'
+    log "- WP core version -> skipped (サーバ側の version.php を取得できませんでした / repo: $local_ver)"
+    return 0
+  fi
+
+  if [ "$local_ver" = "$remote_ver" ]; then
+    printf '\n'
+    log "- WP core version -> OK (server: $remote_ver / repo: $local_ver)"
+    return 0
+  fi
 
   # リポジトリの方が新しい = これから更新を配信する（正常な更新デプロイ）
-  [ "$(printf '%s\n%s\n' "$local_ver" "$remote_ver" | sort -V | tail -1)" = "$local_ver" ] && return 0
+  if [ "$(printf '%s\n%s\n' "$local_ver" "$remote_ver" | sort -V | tail -1)" = "$local_ver" ]; then
+    printf '\n'
+    log "- WP core version -> OK (server: $remote_ver -> repo: $local_ver に更新します)"
+    return 0
+  fi
 
   # サーバ側の方が新しい = サーバで自動更新が走った
   cat >&2 <<EOF
