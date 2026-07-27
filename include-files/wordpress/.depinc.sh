@@ -143,7 +143,11 @@ check_wp_core_version(){
   fi
 
   # サーバ側の方が新しい = サーバで自動更新が走った
-  cat >&2 <<EOF
+  #
+  # stderr ではなく stdout に出す。before_sync は改行なし（echo -n）でログ出力中のため、
+  # stderr に出すと先に flush されて "- before_sync -> Processing..." より前に表示され、
+  # 出力順が入れ替わって読みにくくなる。
+  cat <<EOF
 
 ${log_label}==================================================================
 ${log_label} デプロイを中断しました
