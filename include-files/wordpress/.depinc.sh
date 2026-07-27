@@ -3,6 +3,8 @@
 # for WordPress website deploy（rsync(SSH) / lftp(FTP) 両対応）
 #
 # 機能:
+#  - デプロイ前にサーバ側の WP コアのバージョンを確認し、サーバの方が新しければ中断する
+#    （サーバ側で入った自動更新を mirror --delete で巻き戻さないため）。
 #  - デプロイ中だけ WordPress 標準の .maintenance を設置してメンテナンス画面を表示
 #    （同期中の不整合をユーザに見せない）。rsync(SSH) でも lftp(FTP) でも動作する。
 #  - .htaccess / robots.txt / *.php の #DEP_*_RM / //DEP_*_RM マーカーを除去（後述の
@@ -11,6 +13,8 @@
 #
 # 必要に応じて調整する環境変数:
 #   DEP_WP_DIR                  WP コアのディレクトリ（HOST_DIR からの相対）。既定 "wp"
+#   DEP_WP_SKIP_VERSION_CHECK   1 にするとコアのバージョン照合を飛ばす（意図的なダウン
+#       グレード等、巻き戻しを承知で配信したいときの緊急避難用）
 #   DEP_MAINTENANCE_MAX_MINUTES メンテ表示を維持する最大時間（分）。既定 60
 #       .maintenance の $upgrading を「現在時刻 + この分数」に設定する。WordPress は
 #       $upgrading から 10 分でメンテを自動解除するため、time() のままだと長時間デプロイ
@@ -80,7 +84,73 @@ dep_sed_keep_mtime(){
   touch -d "@$t" "$f"
 }
 
+# サーバ側の WP コアのバージョンを確認し、サーバの方が新しければデプロイを中断する。
+#
+# WP コアを git 管理して mirror（--delete 付き）で配信する構成では、サーバ側で自動更新が
+# 走るとデプロイのたびにコアが古いバージョンへ巻き戻る。巻き戻り＝セキュリティ修正の消失
+# なので、検知したらデプロイを止めて手元での更新を促す。
+# これにより wp-config.php で WP_AUTO_UPDATE_CORE を有効にしたまま運用できる。
+#
+# 中断は exit で行う。deploy.sh は before_sync の戻り値を見ないため return 1 では止まらない。
+# 呼び出しはメンテ ON より前に置くこと（中断時にメンテ画面を残さないため）。
+check_wp_core_version(){
+  [ "${DEP_WP_SKIP_VERSION_CHECK:-}" = "1" ] && return 0
+
+  local local_file="./$DEP_WP_DIR/wp-includes/version.php"
+  # コアを含まない構成（テーマのみのリポジトリ等）では何もしない
+  [ -f "$local_file" ] || return 0
+
+  local remote_file="$DEP_HOST_DIR/$DEP_WP_DIR/wp-includes/version.php"
+  local remote_raw
+  if [ "$DEP_COMMAND" = "lftp" ]; then
+    remote_raw="$(_dep_lftp "cat \"$remote_file\"" 2>/dev/null)"
+  else
+    remote_raw="$(_dep_ssh "cat '$remote_file'" 2>/dev/null)"
+  fi
+
+  local local_ver remote_ver
+  local_ver="$(grep -m1 '^\$wp_version = ' "$local_file" | cut -d"'" -f2)"
+  remote_ver="$(printf '%s\n' "$remote_raw" | grep -m1 '^\$wp_version = ' | cut -d"'" -f2)"
+
+  # 初回デプロイ等でサーバ側に WP が無い場合や、取得に失敗した場合は素通りさせる
+  [ -n "$remote_ver" ] || return 0
+  [ "$local_ver" = "$remote_ver" ] && return 0
+
+  # リポジトリの方が新しい = これから更新を配信する（正常な更新デプロイ）
+  [ "$(printf '%s\n%s\n' "$local_ver" "$remote_ver" | sort -V | tail -1)" = "$local_ver" ] && return 0
+
+  # サーバ側の方が新しい = サーバで自動更新が走った
+  cat >&2 <<EOF
+
+${log_label}==================================================================
+${log_label} デプロイを中断しました
+${log_label} サーバ側の WordPress の方が新しいため、このまま配信すると巻き戻ります
+${log_label}
+${log_label}   サーバ側   : $remote_ver
+${log_label}   リポジトリ : $local_ver
+${log_label}
+${log_label} サーバ側で WordPress の自動更新が実行されています。
+${log_label} このまま同期するとコアが $local_ver に戻り、$remote_ver で入った
+${log_label} セキュリティ修正が失われます。
+${log_label}
+${log_label} 手元で下記を実行し、コミットして push し直してください。
+${log_label}
+${log_label}   wp core update --version=$remote_ver --force
+${log_label}
+${log_label} （wp-cli が無い場合は WordPress $remote_ver を公式サイトから取得し、
+${log_label}   $DEP_WP_DIR/ 配下を差し替える）
+${log_label}
+${log_label} 意図的に巻き戻す場合のみ DEP_WP_SKIP_VERSION_CHECK=1 を設定する。
+${log_label}==================================================================
+
+EOF
+  exit 1
+}
+
 before_sync(){
+  # サーバ側で自動更新が入っていないか確認する。メンテ ON より前に行うこと
+  check_wp_core_version
+
   # 直前の失敗等で残った .maintenance を掃除してからメンテ ON
   maintenance_off
   maintenance_on
