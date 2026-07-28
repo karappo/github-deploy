@@ -10,6 +10,26 @@
 #  - .htaccess / robots.txt / *.php の #DEP_*_RM / //DEP_*_RM マーカーを除去（後述の
 #    通り mtime を保存して差分転送を維持）。
 #  - rsync の場合のみ、同期後にパーミッションを設定する（FTP では実施不可のため skip）。
+#  - サイト固有の処理を差し込むフックを提供する（後述）。
+#
+# サイト固有の処理（フック）:
+#   リポジトリ直下に `.depinc-extra.sh` があれば読み込む。そこで下記の関数を定義すると、
+#   標準処理のあとに呼ばれる。定義しなければ何も起きない。
+#
+#     before_sync_extra   マーカー除去・メンテ ON のあと、同期の直前
+#     after_sync_extra    パーミッション設定のあと、同期の直後
+#
+#   _dep_ssh / _dep_lftp / $DEP_HOST_DIR など、本ファイルの関数・変数をそのまま使える。
+#
+#   例）さくらで PHP バージョンを php.cgi で切り替えているサイト:
+#
+#     # .depinc-extra.sh
+#     after_sync_extra(){
+#       _dep_ssh "cd '$DEP_HOST_DIR' && find ./ -name php.cgi -exec chmod 705 {} \;"
+#     }
+#
+#   【必須】.depignore に `.depinc-extra.sh` を追加すること（サーバへ転送しないため）。
+#   デフォルトの .depignore には追加済み。
 #
 # 必要に応じて調整する環境変数:
 #   DEP_WP_DIR                  WP コアのディレクトリ（HOST_DIR からの相対）。既定 "wp"
@@ -32,6 +52,13 @@
 
 DEP_WP_DIR="${DEP_WP_DIR:-wp}"
 _dep_maint_file="$DEP_HOST_DIR/$DEP_WP_DIR/.maintenance"
+
+# サイト固有のフックを読み込む（無ければ何もしない）。
+# 本ファイルの関数を上書きしないよう、定義するのは *_extra 関数に限ること。
+if [ -f "./.depinc-extra.sh" ]; then
+  # shellcheck source=/dev/null
+  . "./.depinc-extra.sh"
+fi
 
 # lftp をワンショット実行（FTPS 設定を吸収）
 _dep_lftp(){
@@ -196,22 +223,31 @@ before_sync(){
   done < <(grep -rlZ --exclude-dir=.git --include='*.php' \
              -e "//DEP_REMOTE_RM " -e "//DEP_${branch}_RM " . 2>/dev/null)
 
+  # サイト固有の処理（.depinc-extra.sh で定義。無ければ何もしない）
+  type before_sync_extra >/dev/null 2>&1 && before_sync_extra
+
   return 0
 }
 
 after_sync(){
   # パーミッション設定は SSH 前提。lftp(FTP) では実施できないため skip。
-  [ "$DEP_COMMAND" = "lftp" ] && return 0
+  if [ "$DEP_COMMAND" != "lftp" ]; then
+    _dep_ssh "
+      cd '$DEP_HOST_DIR'
+      echo '--- Set Permissions -------------'
+      find ./ -type d -exec chmod 705 {} \;
+      find ./ -type f -exec chmod 604 {} \;
+      find ./ -name .htaccess -exec chmod 604 {} \;
+      find ./ -name wp-config.php -exec chmod 400 {} \;
+      echo '---------------------------------'
+    "
+  fi
 
-  _dep_ssh "
-    cd '$DEP_HOST_DIR'
-    echo '--- Set Permissions -------------'
-    find ./ -type d -exec chmod 705 {} \;
-    find ./ -type f -exec chmod 604 {} \;
-    find ./ -name .htaccess -exec chmod 604 {} \;
-    find ./ -name wp-config.php -exec chmod 400 {} \;
-    echo '---------------------------------'
-  "
+  # サイト固有の処理（.depinc-extra.sh で定義。無ければ何もしない）
+  # lftp でも呼ぶ。SSH が使えない環境向けの処理を書けるようにするため。
+  type after_sync_extra >/dev/null 2>&1 && after_sync_extra
+
+  return 0
 }
 
 # deploy.sh の EXIT trap から呼ばれ、成功・失敗・中断いずれでもメンテを解除する
