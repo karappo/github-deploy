@@ -24,6 +24,7 @@ yarn.lock
 # github-deploy
 .depignore
 .depinc.sh
+.depinc-extra.sh
 deploy.sh
 
 # for MODX
