@@ -119,6 +119,13 @@ jobs:
           curl -sS https://raw.githubusercontent.com/karappo/github-deploy/refs/heads/main/deploy.sh | bash
 ```
 
+> **Note**
+> private なリポジトリを submodule として参照している場合、`submodules: recursive` では取得できません。
+> `actions/checkout` が使うデフォルトの `GITHUB_TOKEN` は、そのワークフローが動いているリポジトリにしか
+> 権限を持たないためです（403 になります）。
+>
+> その場合は、submodule 用のトークンを別途用意して取得するステップが必要です。
+
 #### 複数ブランチへの対応
 
 ステージング環境なども同時にデプロイする場合:
