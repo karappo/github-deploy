@@ -35,11 +35,20 @@
 #   DEP_WP_DIR                  WP コアのディレクトリ（HOST_DIR からの相対）。既定 "wp"
 #   DEP_WP_SKIP_VERSION_CHECK   1 にするとコアのバージョン照合を飛ばす（意図的なダウン
 #       グレード等、巻き戻しを承知で配信したいときの緊急避難用）
-#   DEP_MAINTENANCE_MAX_MINUTES メンテ表示を維持する最大時間（分）。既定 60
+#   DEP_MAINTENANCE_MAX_MINUTES メンテ表示を維持する最大時間（分）。既定 15
 #       .maintenance の $upgrading を「現在時刻 + この分数」に設定する。WordPress は
 #       $upgrading から 10 分でメンテを自動解除するため、time() のままだと長時間デプロイ
 #       の途中で解除されてしまう。未来時刻にすることで解除を防ぎつつ、万一 teardown が
 #       走らなかった場合でもこの時間で自動復帰する（永久ロック防止）。
+#       つまりこの値は「解除に失敗したときサイトが 503 のままになる時間」とほぼ同じ
+#       （正確には この値 + 10 分）なので、短いほど事故が小さい。一方、同期が終わる前に
+#       $upgrading を過ぎるとメンテが解除され、同期途中の状態がユーザに見えてしまう。
+#       同期に時間がかかるサイトでは、ワークフローの env で伸ばすこと:
+#         env:
+#           DEP_MAINTENANCE_MAX_MINUTES: 30
+#   DEP_MAINTENANCE_OFF_RETRIES メンテ解除（.maintenance の削除）の試行回数。既定 3
+#       ホストによっては SSH/FTP の連続接続が弾かれることがあるため、間隔を空けて
+#       やり直す。
 #
 # 【必須】.depignore に `.maintenance` を追加すること。
 #   mirror は --delete 付きで動作するため、除外しないと設置した .maintenance が同期中に
@@ -49,6 +58,9 @@
 #   before_sync : 残骸を掃除 → .maintenance を設置（メンテ ON）
 #   on_teardown : .maintenance を削除（メンテ OFF）。deploy.sh の EXIT trap から呼ばれ、
 #                 同期の成功・失敗・中断いずれでも必ず実行される。
+#                 削除できたことをサーバ側で確認し、消えていなければリトライする。
+#                 それでも消えなければ復旧手順を出してジョブを失敗させる
+#                 （サイトが 503 のまま放置されるのを見逃さないため）。
 
 DEP_WP_DIR="${DEP_WP_DIR:-wp}"
 _dep_maint_file="$DEP_HOST_DIR/$DEP_WP_DIR/.maintenance"
@@ -79,7 +91,7 @@ _dep_ssh(){
 }
 
 maintenance_on(){
-  local ts=$(( $(date +%s) + ${DEP_MAINTENANCE_MAX_MINUTES:-60} * 60 ))
+  local ts=$(( $(date +%s) + ${DEP_MAINTENANCE_MAX_MINUTES:-15} * 60 ))
   local content="<?php \$upgrading = $ts; ?>"
   if [ "$DEP_COMMAND" = "lftp" ]; then
     local tmp; tmp="$(mktemp)"
@@ -91,12 +103,50 @@ maintenance_on(){
   fi
 }
 
-maintenance_off(){
+# .maintenance を削除し、消えたことまで確認する（0 = 消えた / 1 = まだ残っている）。
+#
+# 削除と不在確認は 1 接続で済ませる。確認のために接続を増やすと、連続接続を制限する
+# ホスト（ロリポップ等）で弾かれやすくなり、確認自体が失敗の原因になるため。
+_dep_maint_rm(){
   if [ "$DEP_COMMAND" = "lftp" ]; then
-    _dep_lftp "rm -f \"$_dep_maint_file\"" 2>/dev/null || true
+    # lftp の rm は失敗しても 0 を返すことがあるため、同じセッションで ls を実行し、
+    # 出力が空である（= 残っていない）ことをもって成功と判断する。
+    [ -z "$(_dep_lftp "rm -f \"$_dep_maint_file\"; ls \"$_dep_maint_file\"" 2>/dev/null)" ]
   else
-    _dep_ssh "rm -f \"$_dep_maint_file\"" 2>/dev/null || true
+    # ssh はリモートコマンドの終了ステータスをそのまま返す（接続自体に失敗すれば 255）。
+    _dep_ssh "rm -f \"$_dep_maint_file\"; test ! -e \"$_dep_maint_file\"" >/dev/null 2>&1
   fi
+}
+
+# メンテ解除。消えたら 0、消しきれなければ 1 を返す。
+#
+# 以前はここで 2>/dev/null || true とし、成功も失敗も無言で常に成功扱いにしていた。
+# そのため実際に削除が失敗してサイトが 503 のまま残ったとき、ログに手がかりが一切なく
+# 原因を追えなかった。結果は必ずログに残すこと。
+#
+# $1 に "cleanup" を渡すと before_sync の残骸掃除用の挙動になる:
+#   - 成功してもログを出さない（消えているのが通常のため）
+#   - リトライしない（直後の maintenance_on がどのみち上書きするため）
+maintenance_off(){
+  local mode="${1:-}"
+  local attempts="${DEP_MAINTENANCE_OFF_RETRIES:-3}"
+  [ "$mode" = "cleanup" ] && attempts=1
+
+  local i
+  for (( i = 1; i <= attempts; i++ )); do
+    if _dep_maint_rm; then
+      [ "$mode" = "cleanup" ] || log "- maintenance -> off ($_dep_maint_file)"
+      return 0
+    fi
+    # cleanup は before_sync が改行なし（echo -n）でログ出力している最中なので先に改行する
+    [ "$mode" = "cleanup" ] && printf '\n'
+    log "- maintenance -> off に失敗 ($i/$attempts): $_dep_maint_file"
+    if [ "$i" -lt "$attempts" ]; then
+      sleep 5
+    fi
+  done
+
+  return 1
 }
 
 # 指定ファイルに sed をかけるが mtime は元の値に復元する（GNU coreutils 前提）
@@ -205,8 +255,9 @@ before_sync(){
   # サーバ側で自動更新が入っていないか確認する。メンテ ON より前に行うこと
   check_wp_core_version
 
-  # 直前の失敗等で残った .maintenance を掃除してからメンテ ON
-  maintenance_off
+  # 直前の失敗等で残った .maintenance を掃除してからメンテ ON。
+  # ここでの失敗は致命的ではない（maintenance_on が上書きする）ので、警告だけ出して進む。
+  maintenance_off cleanup || true
   maintenance_on
 
   local branch="${GITHUB_REF_NAME^^}"
@@ -250,7 +301,40 @@ after_sync(){
   return 0
 }
 
-# deploy.sh の EXIT trap から呼ばれ、成功・失敗・中断いずれでもメンテを解除する
+# deploy.sh の EXIT trap から呼ばれ、成功・失敗・中断いずれでもメンテを解除する。
+#
+# ここで消しそこねるとサイトは 503 のまま放置される。黙って終わると誰も気づけないので、
+# 復旧手順を出したうえで exit 1 し、ジョブを失敗させる。
+# 解除できた場合は exit を呼ばない。EXIT trap 内で exit しなければ bash が本来の終了
+# ステータスを保つため、同期に失敗したデプロイを成功扱いにしてしまわない。
 on_teardown(){
-  maintenance_off
+  maintenance_off && return 0
+
+  local hint
+  if [ "$DEP_COMMAND" = "lftp" ]; then
+    hint="FTP クライアントで $_dep_maint_file を削除する"
+  elif [ "${DEP_PORT:+x}" = "x" ]; then
+    hint="ssh $DEP_USER@$DEP_HOST -p $DEP_PORT \"rm -f '$_dep_maint_file'\""
+  else
+    hint="ssh $DEP_USER@$DEP_HOST \"rm -f '$_dep_maint_file'\""
+  fi
+
+  cat <<EOF
+
+${log_label}==================================================================
+${log_label} メンテナンス表示を解除できませんでした
+${log_label} サイトはメンテナンス画面（503）のままです
+${log_label}
+${log_label}   残っているファイル : $_dep_maint_file
+${log_label}
+${log_label} 手動で削除してください。
+${log_label}
+${log_label}   $hint
+${log_label}
+${log_label} 放置した場合も、WordPress が .maintenance の \$upgrading から 10 分後に
+${log_label} 自動で解除します（最長で デプロイ開始 + ${DEP_MAINTENANCE_MAX_MINUTES:-15} 分 + 10 分）。
+${log_label}==================================================================
+
+EOF
+  exit 1
 }
