@@ -189,7 +189,9 @@ WordPress 用 include（`wordpress/`）を使う場合の追加変数:
 |:--|:--|:--|
 | `DEP_WP_DIR` | 例: `wp` | WP コアのディレクトリ（HOST_DIR からの相対）。`.maintenance` の設置先に使う。既定 `wp` |
 | `DEP_MAINTENANCE_MAX_MINUTES` | 例: `30` | デプロイ中のメンテ表示を維持する最大時間（分）。既定 `15`。WordPress の 10 分自動解除を避けつつ、解除に失敗したときの自動復帰上限（この値 + 10 分）にもなる。同期に時間がかかり、終わる前にメンテが解除されてしまうサイトでは伸ばす |
-| `DEP_MAINTENANCE_OFF_RETRIES` | 例: `3` | メンテ解除（`.maintenance` の削除）の試行回数。既定 `3`。SSH/FTP の連続接続を制限するホスト向け |
+| `DEP_MAINTENANCE_RETRIES` | 例: `3` | メンテ ON / OFF の試行回数。既定 `3`（5 秒間隔）。SSH/FTP の連続接続を制限するホスト向け |
+| `DEP_MAINTENANCE_SKIP` | `1` | メンテ表示を一切行わない。メンテ ON に失敗するとデプロイは中断するため、どうしても設置できないサイトを配信するための逃げ道 |
+| `DEP_WP_SKIP_VERSION_CHECK` | `1` | デプロイ前のコアバージョン照合を行わない。サーバ側の方が新しいと中断するため、巻き戻りを承知で配信するための逃げ道 |
 
 ## Include file
 
