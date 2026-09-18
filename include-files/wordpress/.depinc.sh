@@ -55,12 +55,18 @@
 #   削除されてしまう。
 #
 # メンテ ON/OFF のタイミング:
-#   before_sync : 残骸を掃除 → .maintenance を設置（メンテ ON）
+#   before_sync : .maintenance を設置（メンテ ON）。残骸が残っていても消してから書く。
+#                 設置できたことをサーバ側で確認する。失敗しても中断はせず、警告を出して
+#                 デプロイを続ける（実害は同期中の状態が見えることに留まるため）。
 #   on_teardown : .maintenance を削除（メンテ OFF）。deploy.sh の EXIT trap から呼ばれ、
 #                 同期の成功・失敗・中断いずれでも必ず実行される。
 #                 削除できたことをサーバ側で確認し、消えていなければリトライする。
 #                 それでも消えなければ復旧手順を出してジョブを失敗させる
 #                 （サイトが 503 のまま放置されるのを見逃さないため）。
+#
+# 削除・設置とその確認は、いずれも 1 接続にまとめている。確認のために接続を増やすと、
+# SSH/FTP の連続接続を制限するホストで弾かれやすくなり、確認そのものが失敗の原因に
+# なってしまうため。
 
 DEP_WP_DIR="${DEP_WP_DIR:-wp}"
 _dep_maint_file="$DEP_HOST_DIR/$DEP_WP_DIR/.maintenance"
@@ -90,32 +96,88 @@ _dep_ssh(){
   fi
 }
 
+# 複数行の出力を、原因の手がかりとして1行ずつログに残す
+_dep_log_lines(){
+  [ -n "$1" ] || return 0
+  printf '%s\n' "$1" | while IFS= read -r l; do
+    log "  | $l"
+  done
+}
+
+# .maintenance を設置してメンテ ON。
+#
+# 残骸の削除・設置・設置できたことの確認を 1 接続で行う。
+#   - 先に rm するのは、読み取り専用などで残っていた場合に > だけでは上書きできないため。
+#   - 接続を分けないのは、連続接続を制限するホスト（ロリポップ等）で弾かれやすくなるため。
+#
+# 設置できなくてもデプロイは続行する。ここで中断しても得るものが無く（配信が一切行われ
+# ないだけ）、実害は「同期中の画面がユーザに見える」ことに留まるため。ただし黙って進むと
+# 気づけないので、失敗は必ずログに出す。
 maintenance_on(){
   local ts=$(( $(date +%s) + ${DEP_MAINTENANCE_MAX_MINUTES:-15} * 60 ))
   local content="<?php \$upgrading = $ts; ?>"
+  local out rc
+
   if [ "$DEP_COMMAND" = "lftp" ]; then
-    local tmp; tmp="$(mktemp)"
+    local tmp err
+    tmp="$(mktemp)"; err="$(mktemp)"
     printf '%s' "$content" > "$tmp"
-    _dep_lftp "put \"$tmp\" -o \"$_dep_maint_file\""
-    rm -f "$tmp"
+    # put の成否は終了ステータスに出ないことがあるため、ls に出てくるかどうかで判断する
+    out="$(_dep_lftp "rm -f \"$_dep_maint_file\"; put \"$tmp\" -o \"$_dep_maint_file\"; ls \"$_dep_maint_file\"" 2>"$err")"
+    if [ -n "$out" ]; then rc=0; else rc=1; out="$(cat "$err")"; fi
+    rm -f "$tmp" "$err"
   else
-    _dep_ssh "printf '%s' '$content' > \"$_dep_maint_file\""
+    # 書けなかった場合に原因が分かるよう、親ディレクトリのパーミッションを持ち帰る
+    out="$(_dep_ssh "
+      f='$_dep_maint_file'
+      rm -f \"\$f\"
+      printf '%s' '$content' > \"\$f\"
+      [ -s \"\$f\" ] || { ls -ld \"\$(dirname \"\$f\")\"; exit 1; }
+    " 2>&1)"
+    rc=$?
   fi
+
+  # before_sync は改行なし（echo -n）でログ出力している最中なので、先に改行を入れる
+  printf '\n'
+  if [ "$rc" -eq 0 ]; then
+    log "- maintenance -> on ($_dep_maint_file)"
+  else
+    log "- maintenance -> on に失敗: $_dep_maint_file"
+    log "  （デプロイは続行する。同期中の状態がそのままユーザに見える）"
+    _dep_log_lines "$out"
+  fi
+
+  return 0
 }
 
 # .maintenance を削除し、消えたことまで確認する（0 = 消えた / 1 = まだ残っている）。
+# 失敗したときの手がかりは $_dep_maint_rm_out に入れて持ち帰る。
 #
-# 削除と不在確認は 1 接続で済ませる。確認のために接続を増やすと、連続接続を制限する
-# ホスト（ロリポップ等）で弾かれやすくなり、確認自体が失敗の原因になるため。
+# 削除・確認・原因の採取は 1 接続で済ませる。接続を増やすと、連続接続を制限するホスト
+# （ロリポップ等）で弾かれやすくなり、確認そのものが失敗の原因になってしまうため。
 _dep_maint_rm(){
+  _dep_maint_rm_out=""
+
   if [ "$DEP_COMMAND" = "lftp" ]; then
     # lftp の rm は失敗しても 0 を返すことがあるため、同じセッションで ls を実行し、
     # 出力が空である（= 残っていない）ことをもって成功と判断する。
-    [ -z "$(_dep_lftp "rm -f \"$_dep_maint_file\"; ls \"$_dep_maint_file\"" 2>/dev/null)" ]
-  else
-    # ssh はリモートコマンドの終了ステータスをそのまま返す（接続自体に失敗すれば 255）。
-    _dep_ssh "rm -f \"$_dep_maint_file\"; test ! -e \"$_dep_maint_file\"" >/dev/null 2>&1
+    # stderr は捨てる。ファイルが無いときの "not found" が正常系として出るため。
+    _dep_maint_rm_out="$(_dep_lftp "rm -f \"$_dep_maint_file\"; ls \"$_dep_maint_file\"" 2>/dev/null)"
+    [ -z "$_dep_maint_rm_out" ]
+    return
   fi
+
+  # 消えなかった場合に備えて、rm のエラーとファイル・親ディレクトリのパーミッションを
+  # 持ち帰る。「なぜ消えないのか」が分かるのはこの瞬間だけで、後から SSH で見に行っても
+  # 状況（特にパーミッション）は after_sync の chmod で変わってしまっている。
+  # ssh はリモートコマンドの終了ステータスをそのまま返す（接続自体に失敗すれば 255）。
+  _dep_maint_rm_out="$(_dep_ssh "
+    f='$_dep_maint_file'
+    rm -f \"\$f\"
+    [ -e \"\$f\" ] || exit 0
+    ls -ld \"\$f\" \"\$(dirname \"\$f\")\"
+    exit 1
+  " 2>&1)"
 }
 
 # メンテ解除。消えたら 0、消しきれなければ 1 を返す。
@@ -124,23 +186,20 @@ _dep_maint_rm(){
 # そのため実際に削除が失敗してサイトが 503 のまま残ったとき、ログに手がかりが一切なく
 # 原因を追えなかった。結果は必ずログに残すこと。
 #
-# $1 に "cleanup" を渡すと before_sync の残骸掃除用の挙動になる:
-#   - 成功してもログを出さない（消えているのが通常のため）
-#   - リトライしない（直後の maintenance_on がどのみち上書きするため）
+# 呼び出しは on_teardown からのみ。残骸の掃除は maintenance_on に畳んである
+# （同期の直前に "off 失敗" と出ると、これから ON にする場面なのに解除に失敗したように
+#   読めてしまい、かつ接続が1本余分に増えるため）。
 maintenance_off(){
-  local mode="${1:-}"
   local attempts="${DEP_MAINTENANCE_OFF_RETRIES:-3}"
-  [ "$mode" = "cleanup" ] && attempts=1
 
   local i
   for (( i = 1; i <= attempts; i++ )); do
     if _dep_maint_rm; then
-      [ "$mode" = "cleanup" ] || log "- maintenance -> off ($_dep_maint_file)"
+      log "- maintenance -> off ($_dep_maint_file)"
       return 0
     fi
-    # cleanup は before_sync が改行なし（echo -n）でログ出力している最中なので先に改行する
-    [ "$mode" = "cleanup" ] && printf '\n'
     log "- maintenance -> off に失敗 ($i/$attempts): $_dep_maint_file"
+    _dep_log_lines "$_dep_maint_rm_out"
     if [ "$i" -lt "$attempts" ]; then
       sleep 5
     fi
@@ -255,9 +314,7 @@ before_sync(){
   # サーバ側で自動更新が入っていないか確認する。メンテ ON より前に行うこと
   check_wp_core_version
 
-  # 直前の失敗等で残った .maintenance を掃除してからメンテ ON。
-  # ここでの失敗は致命的ではない（maintenance_on が上書きする）ので、警告だけ出して進む。
-  maintenance_off cleanup || true
+  # メンテ ON（直前の失敗等で残った .maintenance の掃除も maintenance_on の中で行う）
   maintenance_on
 
   local branch="${GITHUB_REF_NAME^^}"
