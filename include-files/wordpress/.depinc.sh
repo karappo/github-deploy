@@ -96,11 +96,15 @@ _dep_lftp(){
 }
 
 # ssh をワンショット実行（ポート指定を吸収）
+#
+# コマンドは引数ではなく標準入力で渡し、リモートの sh に実行させる。
+# 引数で渡すとリモートのログインシェルが解釈するため、ログインシェルが csh のホスト
+# （さくらのレンタルサーバーの初期設定）では f=... の代入や $(...) が通らず失敗する。
 _dep_ssh(){
   if [ "${DEP_PORT:+x}" = "x" ]; then
-    ssh "$DEP_USER@$DEP_HOST" -p "$DEP_PORT" "$1"
+    printf '%s\n' "$1" | ssh "$DEP_USER@$DEP_HOST" -p "$DEP_PORT" 'sh -s'
   else
-    ssh "$DEP_USER@$DEP_HOST" "$1"
+    printf '%s\n' "$1" | ssh "$DEP_USER@$DEP_HOST" 'sh -s'
   fi
 }
 
