@@ -33,6 +33,10 @@
 #
 # 必要に応じて調整する環境変数:
 #   DEP_WP_DIR                  WP コアのディレクトリ（HOST_DIR からの相対）。既定 "wp"
+#       【このブランチだけの拡張】空白で区切って複数書ける（例: "2025/wp 2028/wp"）。
+#       1つの DocumentRoot に WordPress を複数置くサイト用。書いた順に、それぞれで
+#       コアのバージョン確認とメンテ表示の ON / OFF を行う。1つだけ書いた場合の動きと
+#       ログは main と同じ。
 #   DEP_WP_SKIP_VERSION_CHECK   1 にするとコアのバージョン照合を飛ばす（意図的なダウン
 #       グレード等、巻き戻しを承知で配信したいときの緊急避難用）
 #   DEP_MAINTENANCE_MAX_MINUTES メンテ表示を維持する最大時間（分）。既定 15
@@ -75,9 +79,16 @@
 # なってしまうため。
 
 DEP_WP_DIR="${DEP_WP_DIR:-wp}"
-_dep_maint_file="$DEP_HOST_DIR/$DEP_WP_DIR/.maintenance"
+# 複数の WordPress を扱えるよう、空白で区切って配列にする（1つなら要素は1つ）
+read -r -a _dep_wp_dirs <<< "$DEP_WP_DIR"
+# 今扱っている WordPress の .maintenance。各処理はこれを見るので、ループの中で差し替える
+_dep_maint_file="$DEP_HOST_DIR/${_dep_wp_dirs[0]}/.maintenance"
 # 実際にメンテを ON にできたか。teardown のメッセージを実態に合わせるために使う
 _dep_maint_is_on=0
+# メンテを ON にできた .maintenance の一覧（解除の対象）
+_dep_maint_on_files=()
+# 解除できずに残った .maintenance の一覧（teardown のメッセージ用）
+_dep_maint_left_files=()
 
 # サイト固有のフックを読み込む（無ければ何もしない）。
 # 本ファイルの関数を上書きしないよう、定義するのは *_extra 関数に限ること。
@@ -213,12 +224,23 @@ maintenance_on(){
   # before_sync は改行なし（echo -n）でログ出力している最中なので、先に改行を入れる
   printf '\n'
 
-  if _dep_maint_retry _dep_maint_put on; then
-    _dep_maint_is_on=1
-    log "- maintenance -> on ($_dep_maint_file)"
-    return 0
-  fi
+  local d
+  for d in "${_dep_wp_dirs[@]}"; do
+    _dep_maint_file="$DEP_HOST_DIR/$d/.maintenance"
+    if _dep_maint_retry _dep_maint_put on; then
+      _dep_maint_is_on=1
+      _dep_maint_on_files+=("$_dep_maint_file")
+      log "- maintenance -> on ($_dep_maint_file)"
+      continue
+    fi
+    # 置けなかった。先に ON にした分は teardown で解除される
+    _dep_maint_abort
+  done
+  return 0
+}
 
+# メンテを置けなかったときの中断（$_dep_maint_file が置けなかったファイル）
+_dep_maint_abort(){
   cat <<EOF
 
 ${log_label}==================================================================
@@ -252,9 +274,18 @@ EOF
 
 # メンテ解除。消えたら 0、消しきれなければ 1 を返す。
 maintenance_off(){
-  _dep_maint_retry _dep_maint_rm off || return 1
-  log "- maintenance -> off ($_dep_maint_file)"
-  return 0
+  local f rc=0
+  _dep_maint_left_files=()
+  for f in "${_dep_maint_on_files[@]}"; do
+    _dep_maint_file="$f"
+    if _dep_maint_retry _dep_maint_rm off; then
+      log "- maintenance -> off ($_dep_maint_file)"
+    else
+      _dep_maint_left_files+=("$f")
+      rc=1
+    fi
+  done
+  return $rc
 }
 
 # 指定ファイルに sed をかけるが mtime は元の値に復元する（GNU coreutils 前提）
@@ -280,6 +311,16 @@ dep_sed_keep_mtime(){
 # 呼び出しはメンテ ON より前に置くこと（中断時にメンテ画面を残さないため）。
 check_wp_core_version(){
   [ "${DEP_WP_SKIP_VERSION_CHECK:-}" = "1" ] && return 0
+
+  # 本体（_dep_check_wp_core_version_one）は $DEP_WP_DIR を見るので、1つずつ差し替えて呼ぶ
+  local DEP_WP_DIR
+  for DEP_WP_DIR in "${_dep_wp_dirs[@]}"; do
+    _dep_check_wp_core_version_one
+  done
+  return 0
+}
+
+_dep_check_wp_core_version_one(){
 
   local local_file="./$DEP_WP_DIR/wp-includes/version.php"
   # コアを含まない構成（テーマのみのリポジトリ等）では何もしない
@@ -429,12 +470,27 @@ on_teardown(){
   # 静かに終わる。ここで「503 のままです」と出すと嘘になるうえ、中断の本当の理由
   # （メンテを置けなかった件）がこのメッセージに埋もれる。
   if [ "$_dep_maint_is_on" != "1" ]; then
-    _dep_maint_rm || true
+    local d
+    for d in "${_dep_wp_dirs[@]}"; do
+      _dep_maint_file="$DEP_HOST_DIR/$d/.maintenance"
+      _dep_maint_rm || true
+    done
     return 0
   fi
 
   maintenance_off && return 0
 
+  # 残ったファイルごとにメッセージを出す（1つなら main と同じ表示）
+  local f
+  for f in "${_dep_maint_left_files[@]}"; do
+    _dep_maint_file="$f"
+    _dep_maint_teardown_message
+  done
+  exit 1
+}
+
+# メンテを解除できなかったときの案内（$_dep_maint_file が残ったファイル）
+_dep_maint_teardown_message(){
   local hint
   if [ "$DEP_COMMAND" = "lftp" ]; then
     hint="FTP クライアントで $_dep_maint_file を削除する"
@@ -461,5 +517,4 @@ ${log_label} 自動で解除します（最長で デプロイ開始 + ${DEP_MAI
 ${log_label}==================================================================
 
 EOF
-  exit 1
 }
