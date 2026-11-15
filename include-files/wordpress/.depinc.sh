@@ -152,8 +152,9 @@ _dep_maint_put(){
 
   # 書けなかった場合に原因が分かるよう、親ディレクトリのパーミッションを持ち帰る。
   # ssh はリモートコマンドの終了ステータスをそのまま返す（接続自体に失敗すれば 255）。
-  # 【multi-wp-dir】サーバーに WordPress のディレクトリがまだない（初回のデプロイ）ときは、
-  # 守るべき表示がないので置かずに成功扱いにし、目印を返す。確認のために接続は増やさない。
+  # サーバーに WordPress のディレクトリがまだない（初回のデプロイなど）ときは、守るべき表示が
+  # ないので置かずに成功扱いにし、目印を返す（コアのバージョン確認が初回を素通りさせるのと
+  # 揃える）。確認のために接続は増やさない。
   _dep_maint_skipped=0
   _dep_maint_out="$(_dep_ssh "
     f='$_dep_maint_file'
@@ -239,7 +240,7 @@ maintenance_on(){
     _dep_maint_file="$DEP_HOST_DIR/$d/.maintenance"
     if _dep_maint_retry _dep_maint_put on; then
       if [ "${_dep_maint_skipped:-0}" = "1" ]; then
-        log "- maintenance -> skipped (サーバーに $d がまだありません。初回のデプロイ)"
+        log "- maintenance -> skipped (サーバーに $d がありません。初回のデプロイでなければ DEP_WP_DIR を確認してください)"
         continue
       fi
       _dep_maint_is_on=1
