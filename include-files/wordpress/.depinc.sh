@@ -141,12 +141,23 @@ _dep_maint_put(){
 
   # 書けなかった場合に原因が分かるよう、親ディレクトリのパーミッションを持ち帰る。
   # ssh はリモートコマンドの終了ステータスをそのまま返す（接続自体に失敗すれば 255）。
+  # サーバーに WordPress のディレクトリがまだない（初回のデプロイなど）ときは、守るべき表示が
+  # ないので置かずに成功扱いにし、目印を返す（コアのバージョン確認が初回を素通りさせるのと
+  # 揃える）。確認のために接続は増やさない。
+  _dep_maint_skipped=0
   _dep_maint_out="$(_dep_ssh "
     f='$_dep_maint_file'
+    [ -d \"\$(dirname \"\$f\")\" ] || { echo __DEP_NO_WP_DIR__; exit 0; }
     rm -f \"\$f\"
     printf '%s' '$content' > \"\$f\"
     [ -s \"\$f\" ] || { ls -ld \"\$(dirname \"\$f\")\"; exit 1; }
   " 2>&1)"
+  local rc=$?
+  if [ $rc -eq 0 ] && [ "$_dep_maint_out" = "__DEP_NO_WP_DIR__" ]; then
+    _dep_maint_skipped=1
+    _dep_maint_out=""
+  fi
+  return $rc
 }
 
 # .maintenance を削除し、消えたことまで確認する（0 = 消えた / 1 = まだ残っている）。
@@ -214,6 +225,11 @@ maintenance_on(){
   printf '\n'
 
   if _dep_maint_retry _dep_maint_put on; then
+    # サーバーに WordPress のディレクトリがない。書き間違いにも気づけるよう、確かめ方を添える
+    if [ "${_dep_maint_skipped:-0}" = "1" ]; then
+      log "- maintenance -> skipped (サーバーに $DEP_WP_DIR がありません。初回のデプロイでなければ DEP_WP_DIR を確認してください)"
+      return 0
+    fi
     _dep_maint_is_on=1
     log "- maintenance -> on ($_dep_maint_file)"
     return 0
